@@ -48,7 +48,7 @@ func (c *r_cmd) String() string {
 func (c *r_cmd) processLine(s *Sed) (bool, error) {
 	// print output space
 	if c.text != nil {
-		s.outputFile.Write(c.text)
+		_, _ = s.output.Write(c.text)
 	}
 	return false, nil
 }

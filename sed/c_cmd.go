@@ -51,7 +51,7 @@ func (c *c_cmd) String() string {
 
 func (c *c_cmd) printText(s *Sed) {
 	// we are going to get the newline from the
-	s.outputFile.Write(c.text)
+	_, _ = s.output.Write(c.text)
 }
 
 func (c *c_cmd) processLine(s *Sed) (bool, error) {

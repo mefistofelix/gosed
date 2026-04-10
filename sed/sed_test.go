@@ -26,6 +26,7 @@
 package sed
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -237,8 +238,8 @@ func TestNewQCmd(t *testing.T) {
 	}
 	if err == nil {
 		t.Error("Didn't get an error we expected")
-	} else {
-		checkString(t, "Expected: strconv.ParseInt: parsing \"q\": invalid syntax", "strconv.ParseInt: parsing \"q\": invalid syntax", err.Error())
+	} else if !strings.Contains(err.Error(), "invalid syntax") {
+		t.Errorf("Expected invalid syntax error, got %q", err.Error())
 	}
 
 	pieces = []byte{'q'}

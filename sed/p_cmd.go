@@ -50,9 +50,9 @@ func (c *p_cmd) processLine(s *Sed) (bool, error) {
 	// print output space
 	if c.upToNewLine {
 		firstLine := bytes.SplitN(s.patternSpace, []byte{'\n'}, 1)[0]
-		fmt.Fprintln(s.outputFile, string(firstLine))
+		fmt.Fprintln(s.output, string(firstLine))
 	} else {
-		fmt.Fprintln(s.outputFile, string(s.patternSpace))
+		fmt.Fprintln(s.output, string(s.patternSpace))
 	}
 	return false, nil
 }

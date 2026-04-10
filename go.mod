@@ -1,7 +1,7 @@
-module bald-mountain.com/gosed
+module github.com/mefistofelix/gosed
 
 go 1.25.0
 
-replace bald-mountain.com/sed => ./sed
+replace github.com/mefistofelix/gosed/sed => ./sed
 
-require bald-mountain.com/sed v0.0.0-00010101000000-000000000000
+require github.com/mefistofelix/gosed/sed v0.0.0-00010101000000-000000000000

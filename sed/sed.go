@@ -46,6 +46,9 @@ const (
 
 var versionString string
 
+var currentStdout io.Writer = os.Stdout
+var currentStderr io.Writer = os.Stderr
+
 func init() {
 	versionString = fmt.Sprintf("%d.%d.%d", versionMajor, versionMinor, versionPoint)
 }
@@ -72,7 +75,7 @@ type Sed struct {
 	beforeCommands          *list.List
 	commands                *list.List
 	afterCommands           *list.List
-	outputFile              *os.File
+	output                  io.Writer
 	patternSpace, holdSpace []byte
 	scriptLines             [][]byte
 	scriptLineNumber        int
@@ -82,7 +85,7 @@ func (s *Sed) Init() {
 	s.beforeCommands = new(list.List)
 	s.commands = new(list.List)
 	s.afterCommands = new(list.List)
-	s.outputFile = os.Stdout
+	s.output = currentStdout
 	s.patternSpace = make([]byte, 0)
 	s.holdSpace = make([]byte, 0)
 }
@@ -93,12 +96,20 @@ func copyByteSlice(a []byte) []byte {
 	return newSlice
 }
 
-func usage() {
+type ExitError struct {
+	Code int
+}
+
+func (e ExitError) Error() string {
+	return fmt.Sprintf("exit status %d", e.Code)
+}
+
+func usage(fs *flag.FlagSet) {
 	// only show usage once.
 	if !usageShown {
 		usageShown = true
-		fmt.Fprint(os.Stdout, "sed [options] [script] input_file\n\n")
-		flag.PrintDefaults()
+		fmt.Fprint(currentStdout, "sed [options] [script] input_file\n\n")
+		fs.PrintDefaults()
 	}
 }
 
@@ -148,8 +159,7 @@ func (s *Sed) parseScript(scriptBuffer []byte) (err error) {
 		}
 		c, err := NewCmd(s, line)
 		if err != nil {
-			fmt.Printf("Script error: %s -> %d: %s\n", err.Error(), s.scriptLineNumber, line)
-			os.Exit(-1)
+			return fmt.Errorf("script error: %s -> %d: %s", err.Error(), s.scriptLineNumber, line)
 		}
 		if _, ok := c.(*i_cmd); ok {
 			s.beforeCommands.PushBack(c)
@@ -165,7 +175,7 @@ func (s *Sed) parseScript(scriptBuffer []byte) (err error) {
 func (s *Sed) printLine(line []byte) {
 	l := len(line)
 	if *line_wrap <= 0 || l < int(*line_wrap) {
-		fmt.Fprintf(s.outputFile, "%s\n", line)
+		fmt.Fprintf(s.output, "%s\n", line)
 	} else {
 		// print the line in segments
 		for i := 0; i < l; i += int(*line_wrap) {
@@ -173,7 +183,7 @@ func (s *Sed) printLine(line []byte) {
 			if endOfLine > l {
 				endOfLine = l
 			}
-			fmt.Fprintf(s.outputFile, "%s\n", line[i:endOfLine])
+			fmt.Fprintf(s.output, "%s\n", line[i:endOfLine])
 		}
 	}
 }
@@ -185,7 +195,7 @@ func (s *Sed) printPatternSpace() {
 	}
 }
 
-func (s *Sed) process() {
+func (s *Sed) process() error {
 	if *treat_files_as_seperate || *edit_inplace {
 		s.lineNumber = 0
 	}
@@ -205,7 +215,7 @@ func (s *Sed) process() {
 			// ask the sed if we should process this command, based on address
 			if cmd, ok := c.Value.(*i_cmd); ok {
 				if c.Value.(Address).match(s.patternSpace, s.lineNumber) {
-					s.outputFile.Write(cmd.text)
+					_, _ = s.output.Write(cmd.text)
 				}
 			}
 		}
@@ -215,10 +225,7 @@ func (s *Sed) process() {
 				var err error
 				stop, err = c.Value.(Cmd).processLine(s)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
-					fmt.Fprintf(os.Stderr, "Line: %d:%s\n", s.lineNumber, s.currentLine)
-					fmt.Fprintf(os.Stderr, "Command: %s\n", c.Value.(Cmd).String())
-					os.Exit(-1)
+					return fmt.Errorf("error: %s\nline: %d:%s\ncommand: %s", err.Error(), s.lineNumber, s.currentLine, c.Value.(Cmd).String())
 				}
 				if stop {
 					break
@@ -233,25 +240,54 @@ func (s *Sed) process() {
 			// ask the sed if we should process this command, based on address
 			if cmd, ok := c.Value.(*a_cmd); ok {
 				if c.Value.(Address).match(s.patternSpace, s.lineNumber) {
-					fmt.Fprintf(s.outputFile, "%s\n", cmd.text)
+					fmt.Fprintf(s.output, "%s\n", cmd.text)
 				}
 			}
 		}
 		s.patternSpace, err = s.input.ReadSlice('\n')
 	}
+	return nil
 }
 
-func Main() {
+func normalizeScript(scriptBuffer []byte) []byte {
+	idx := bytes.IndexByte(scriptBuffer, ';')
+	for idx >= 0 {
+		scriptBuffer[idx] = '\n'
+		s := scriptBuffer[idx+1:]
+		idx = bytes.IndexByte(s, ';')
+	}
+	return scriptBuffer
+}
+
+func run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
 	var err error
+	currentStdout = stdout
+	currentStderr = stderr
+	usageShown = false
+	flag.CommandLine = flag.NewFlagSet("sed", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(stderr)
+	show_version = flag.Bool("version", false, "Show version information.")
+	show_help = flag.Bool("h", false, "Show help information.")
+	quiet = flag.Bool("n", false, "Don't print the pattern space at the end of each script cycle.")
+	script = flag.String("e", "", "The script used to process the input file.")
+	script_file = flag.String("f", "", "Specify a file to read as the script. Ignored if -e present")
+	edit_inplace = flag.Bool("i", false, "This option specifies that files are to be edited in-place. Otherwise output is printed to stdout.")
+	line_wrap = flag.Uint("l", 0, "Specify the default line-wrap length for the l command. A length of 0 (zero) means to never wrap long lines. If not specified, it is taken to be 70.")
+	unbuffered = flag.Bool("u", false, "Buffer both input and output as minimally as practical. (ignored)")
+	treat_files_as_seperate = flag.Bool("s", false, "Treat files as searate entites. Line numbers reset to 1 for each file")
+
 	s := new(Sed)
 	s.Init()
-	flag.Parse()
+	s.output = stdout
+	if err := flag.CommandLine.Parse(args); err != nil {
+		return err
+	}
 	if *show_version {
-		fmt.Fprintf(os.Stdout, "Version: %s (c)2009-2010 Geoffrey Clements All Rights Reserved\n\n", versionString)
+		fmt.Fprintf(stdout, "Version: %s (c)2009-2010 Geoffrey Clements All Rights Reserved\n\n", versionString)
 	}
 	if *show_help {
-		usage()
-		return
+		usage(flag.CommandLine)
+		return nil
 	}
 
 	// the first parameter may be a script or an input file. This helps us track which
@@ -264,62 +300,49 @@ func Main() {
 		if len(*script_file) > 0 {
 			sb, err := os.ReadFile(*script_file)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error reading script file %s\n", *script_file)
-				os.Exit(-1)
+				return fmt.Errorf("error reading script file %s", *script_file)
 			}
 			scriptBuffer = sb
-		} else if flag.NArg() > 1 {
-			scriptBuffer = []byte(flag.Arg(0))
-
-			// change semicoluns to newlines for scripts on command line
-			idx := bytes.IndexByte(scriptBuffer, ';')
-			for idx >= 0 {
-				scriptBuffer[idx] = '\n'
-				s := scriptBuffer[idx+1:]
-				idx = bytes.IndexByte(s, ';')
-			}
+		} else if flag.CommandLine.NArg() > 1 {
+			scriptBuffer = normalizeScript([]byte(flag.CommandLine.Arg(0)))
 			// first parameter was the script so move to second parameter
 			currentFileParameter++
 		}
 	} else {
-		scriptBuffer = []byte(*script)
-		// change semicoluns to newlines for scripts on command line
-		idx := bytes.IndexByte(scriptBuffer, ';')
-		for idx >= 0 {
-			scriptBuffer[idx] = '\n'
-			s := scriptBuffer[idx+1:]
-			idx = bytes.IndexByte(s, ';')
-		}
+		scriptBuffer = normalizeScript([]byte(*script))
 	}
 
 	// if script still isn't set we are screwed, exit.
 	if len(scriptBuffer) == 0 {
-		fmt.Fprint(os.Stderr, "No script found.\n\n")
-		usage()
-		os.Exit(-1)
+		fmt.Fprint(stderr, "No script found.\n\n")
+		usage(flag.CommandLine)
+		return ExitError{Code: 1}
 	}
 
 	// parse script
-	s.parseScript(scriptBuffer)
+	if err := s.parseScript(scriptBuffer); err != nil {
+		return err
+	}
 
-	if currentFileParameter >= flag.NArg() {
+	if currentFileParameter >= flag.CommandLine.NArg() {
 		if *edit_inplace {
-			fmt.Fprintf(os.Stderr, "Warning: Option -i ignored\n")
+			fmt.Fprintf(stderr, "Warning: Option -i ignored\n")
 		}
-		s.input = bufio.NewReader(os.Stdin)
-		s.process()
+		s.input = bufio.NewReader(stdin)
+		return s.process()
 	} else {
-		for ; currentFileParameter < flag.NArg(); currentFileParameter++ {
-			inputFilename = flag.Arg(currentFileParameter)
+		for ; currentFileParameter < flag.CommandLine.NArg(); currentFileParameter++ {
+			inputFilename = flag.CommandLine.Arg(currentFileParameter)
 			// actually do the processing
 			s.inputFile, err = os.Open(inputFilename)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error openint input file: %s.\n\n", inputFilename)
-				usage()
-				os.Exit(-1)
+				fmt.Fprintf(stderr, "Error openint input file: %s.\n\n", inputFilename)
+				usage(flag.CommandLine)
+				return ExitError{Code: 1}
 			}
 			s.input = bufio.NewReader(s.inputFile)
 			var tempFilename string
+			var tempFile *os.File
 			if *edit_inplace {
 				tempFilename = inputFilename + ".tmp"
 				tmpc := 0
@@ -332,41 +355,61 @@ func Main() {
 				f, err := os.Create(tempFilename)
 				if err != nil {
 					s.inputFile.Close()
-					fmt.Fprintf(os.Stderr, "Error opening temp file file for inplace editing: %s\n", err.Error())
-					os.Exit(-1)
+					return fmt.Errorf("error opening temp file file for inplace editing: %s", err.Error())
 				}
-				s.outputFile = f
+				tempFile = f
+				s.output = f
+			} else {
+				s.output = stdout
 			}
-			s.process()
+			if err := s.process(); err != nil {
+				_ = s.inputFile.Close()
+				return err
+			}
 			// done processing, close input file
 			s.inputFile.Close()
 			s.input = nil
 			if *edit_inplace {
-				s.outputFile.Seek(0, 0)
+				if _, err := tempFile.Seek(0, 0); err != nil {
+					return err
+				}
 				// find out about
 				dir, err := os.Stat(inputFilename)
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error getting information about input file: %s %v\n", err)
-					// os.Remove(tempFilename);
-					os.Exit(-1)
+					return fmt.Errorf("error getting information about input file: %s %v", inputFilename, err)
 				}
 				// reopen input file
 				s.inputFile, err = os.OpenFile(inputFilename, os.O_WRONLY|os.O_TRUNC, dir.Mode())
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "Error opening input file for in place editing: %s\n", err.Error())
-					// os.Remove(tempFilename);
-					os.Exit(-1)
+					return fmt.Errorf("error opening input file for in place editing: %s", err.Error())
 				}
 
-				_, e := io.Copy(s.inputFile, s.outputFile)
-				s.outputFile.Close()
-				s.inputFile.Close()
+				_, e := io.Copy(s.inputFile, tempFile)
+				_ = tempFile.Close()
+				_ = s.inputFile.Close()
 				if e != nil {
-					fmt.Fprintf(os.Stderr, "Error copying temp file back to input file: %s\nFull output is in %s", err.Error(), tempFilename)
+					return fmt.Errorf("error copying temp file back to input file: %s\nfull output is in %s", e.Error(), tempFilename)
 				} else {
-					os.Remove(tempFilename)
+					_ = os.Remove(tempFilename)
 				}
 			}
 		}
 	}
+	return nil
+}
+
+func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) error {
+	return run(args, stdin, stdout, stderr)
+}
+
+func Main() {
+	err := Run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	if err == nil {
+		return
+	}
+	if exitErr, ok := err.(ExitError); ok {
+		os.Exit(exitErr.Code)
+	}
+	fmt.Fprintln(os.Stderr, err)
+	os.Exit(1)
 }

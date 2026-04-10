@@ -27,7 +27,6 @@ package sed
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 )
 
@@ -72,6 +71,5 @@ func NewQCmd(pieces [][]byte, addr *address) (c *q_cmd, err error) {
 }
 
 func (c *q_cmd) processLine(s *Sed) (stop bool, err error) {
-	os.Exit(c.exit_code)
-	return false, nil
+	return true, ExitError{Code: c.exit_code}
 }

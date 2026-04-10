@@ -27,7 +27,6 @@ package sed
 
 import (
 	"fmt"
-	"os"
 )
 
 type eql_cmd struct {
@@ -46,7 +45,7 @@ func (c *eql_cmd) String() string {
 }
 
 func (c *eql_cmd) processLine(s *Sed) (bool, error) {
-	fmt.Fprintf(os.Stdout, "\n%d\n", s.lineNumber)
+	fmt.Fprintf(s.output, "\n%d\n", s.lineNumber)
 	return false, nil
 }
 

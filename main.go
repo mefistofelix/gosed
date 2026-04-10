@@ -25,6 +25,6 @@
 
 package main
 
-import "bald-mountain.com/sed"
+import "github.com/mefistofelix/gosed/sed"
 
 func main() { sed.Main() }
